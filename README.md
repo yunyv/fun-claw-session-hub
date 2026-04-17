@@ -6,3 +6,7 @@ Included paths:
 - Funclaw
 - src/funclaw
 - src/cli/funclaw-cli
+
+Session Hub docs:
+- `Funclaw/session-hub-接口文档.md`
+- `Funclaw/funclaw-hub.openapi.yaml`
