@@ -96,7 +96,7 @@ export function registerFunclawCli(program: Command) {
     .option(
       "--capabilities <csv>",
       "Comma-separated worker capabilities",
-      "responses.create,session.history.get,node.invoke",
+      "responses.create,agent,session.history.get,node.invoke",
     )
     .action(async (opts: FunclawWorkerRunOpts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
@@ -116,4 +116,3 @@ export function registerFunclawCli(program: Command) {
       });
     });
 }
-

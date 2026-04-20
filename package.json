@@ -1,0 +1,20 @@
+{
+  "name": "fun-claw-session-hub",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:ts": "vitest run",
+    "test:go": "cd src/funclaw/worker && go test ./...",
+    "test": "bun run test:ts && bun run test:go"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.41",
+    "ajv": "^8.17.1",
+    "commander": "^14.0.1",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

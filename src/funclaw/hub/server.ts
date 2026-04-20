@@ -47,6 +47,8 @@ type HubClientState = {
   adapterId: string | null;
 };
 
+const WS_READY_STATE_CLOSED = 3;
+
 export type StartFunclawHubOptions = {
   host?: string;
   port?: number;
@@ -708,9 +710,20 @@ export async function startFunclawHubServer(opts: StartFunclawHubOptions = {}) {
     store,
     server,
     async close(reason?: string) {
+      const closePromises = [...sockets].map(
+        (client) =>
+          new Promise<void>((resolve) => {
+            if (client.socket.readyState === WS_READY_STATE_CLOSED) {
+              resolve();
+              return;
+            }
+            client.socket.once("close", () => resolve());
+          }),
+      );
       for (const client of sockets) {
         client.socket.close(1000, reason ?? "shutdown");
       }
+      await Promise.allSettled(closePromises);
       await new Promise<void>((resolve, reject) => {
         server.close((error) => {
           if (error) {

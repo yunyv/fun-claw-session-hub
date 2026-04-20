@@ -1,5 +1,8 @@
 import { createServer } from "node:http";
 import { once } from "node:events";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket, type RawData } from "ws";
 import { rawDataToString } from "../../infra/ws.js";
@@ -14,6 +17,26 @@ async function getFreePort() {
   const port = typeof address === "object" && address ? address.port : 0;
   await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   return port;
+}
+
+async function createTempDir(prefix: string) {
+  return await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+}
+
+async function removeDirWithRetry(dirPath: string) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    try {
+      await fs.rm(dirPath, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = error instanceof Error && "code" in error ? String(error.code) : "";
+      if (code !== "ENOTEMPTY" && code !== "EBUSY") {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  await fs.rm(dirPath, { recursive: true, force: true });
 }
 
 async function connectWorker(params: { port: number; token: string; workerId?: string }) {
@@ -115,10 +138,13 @@ describe("funclaw hub server", () => {
 
   it("routes a request to a connected worker and returns the completed result", async () => {
     const port = await getFreePort();
+    const dataDir = await createTempDir("funclaw-hub-test.");
+    cleanups.push(() => removeDirWithRetry(dataDir));
     const hub = await startFunclawHubServer({
       host: "127.0.0.1",
       port,
       token: "hub-secret",
+      dataDir,
       publicBaseUrl: `http://127.0.0.1:${port}`,
     });
     cleanups.push(() => hub.close("test done"));
@@ -192,10 +218,13 @@ describe("funclaw hub server", () => {
 
   it("stores large artifacts as hub_file and serves the content endpoint", async () => {
     const port = await getFreePort();
+    const dataDir = await createTempDir("funclaw-hub-test.");
+    cleanups.push(() => removeDirWithRetry(dataDir));
     const hub = await startFunclawHubServer({
       host: "127.0.0.1",
       port,
       token: "hub-secret",
+      dataDir,
       publicBaseUrl: `http://127.0.0.1:${port}`,
     });
     cleanups.push(() => hub.close("test done"));
@@ -244,10 +273,13 @@ describe("funclaw hub server", () => {
 
   it("keeps sticky session routing and fails new requests when the bound worker is offline", async () => {
     const port = await getFreePort();
+    const dataDir = await createTempDir("funclaw-hub-test.");
+    cleanups.push(() => removeDirWithRetry(dataDir));
     const hub = await startFunclawHubServer({
       host: "127.0.0.1",
       port,
       token: "hub-secret",
+      dataDir,
       publicBaseUrl: `http://127.0.0.1:${port}`,
     });
     cleanups.push(() => hub.close("test done"));

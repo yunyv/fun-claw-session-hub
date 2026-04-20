@@ -136,6 +136,7 @@ export const HubFrameSchema = Type.Union(
 
 export const TaskActionSchema = Type.Union([
   Type.Literal("responses.create"),
+  Type.Literal("agent"),
   Type.Literal("session.history.get"),
   Type.Literal("node.invoke"),
 ]);
@@ -346,4 +347,3 @@ export type RequestRecord = Static<typeof RequestRecordSchema>;
 export type CreateSessionBody = Static<typeof CreateSessionBodySchema>;
 export type PostSessionMessageBody = Static<typeof PostSessionMessageBodySchema>;
 export type AwaitRequestBody = Static<typeof AwaitRequestBodySchema>;
-
