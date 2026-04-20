@@ -7,7 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
+	"sync/atomic"
 	"testing"
+
+	ws "github.com/gorilla/websocket"
 )
 
 func TestGetSessionHistory_SendsOperatorReadScope(t *testing.T) {
@@ -238,5 +242,168 @@ func TestNormalizeNodeArtifacts_UsesNestedPayload(t *testing.T) {
 	}
 	if _, stillHasBase64 := payload["base64"]; stillHasBase64 {
 		t.Fatal("expected base64 to be stripped from nested payload")
+	}
+}
+
+func TestWaitForAgentCompletion_ContinuesAfterTimeout(t *testing.T) {
+	var waitCalls atomic.Int32
+	upgrader := ws.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("failed to upgrade websocket: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		statuses := []string{"timeout", "ok"}
+		for _, status := range statuses {
+			_, rawMessage, err := conn.ReadMessage()
+			if err != nil {
+				t.Errorf("failed to read websocket message: %v", err)
+				return
+			}
+
+			var frame map[string]interface{}
+			if err := json.Unmarshal(rawMessage, &frame); err != nil {
+				t.Errorf("failed to decode websocket frame: %v", err)
+				return
+			}
+			if gotMethod, _ := frame["method"].(string); gotMethod != "agent.wait" {
+				t.Errorf("expected agent.wait method, got %q", gotMethod)
+				return
+			}
+
+			params, ok := frame["params"].(map[string]interface{})
+			if !ok {
+				t.Errorf("expected params map, got %#v", frame["params"])
+				return
+			}
+			if gotRunID, _ := params["runId"].(string); gotRunID != "run-1" {
+				t.Errorf("expected runId run-1, got %q", gotRunID)
+				return
+			}
+			if gotTimeoutMs, ok := params["timeoutMs"].(float64); !ok || int(gotTimeoutMs) != agentWaitTimeoutMs {
+				t.Errorf("expected timeoutMs=%d, got %#v", agentWaitTimeoutMs, params["timeoutMs"])
+				return
+			}
+
+			waitCalls.Add(1)
+
+			if status == "timeout" {
+				if err := conn.WriteJSON(map[string]interface{}{
+					"type":  "event",
+					"event": "tick",
+				}); err != nil {
+					t.Errorf("failed to write tick event: %v", err)
+					return
+				}
+			}
+
+			if err := conn.WriteJSON(map[string]interface{}{
+				"type": "res",
+				"id":   frame["id"],
+				"ok":   true,
+				"payload": map[string]interface{}{
+					"runId":  "run-1",
+					"status": status,
+				},
+			}); err != nil {
+				t.Errorf("failed to write agent.wait response: %v", err)
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := ws.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("failed to dial websocket test server: %v", err)
+	}
+	defer conn.Close()
+
+	gw := New(server.URL, "", wsURL)
+	payload, err := gw.waitForAgentCompletion(conn, "run-1")
+	if err != nil {
+		t.Fatalf("expected waitForAgentCompletion to succeed, got %v", err)
+	}
+
+	if gotStatus, _ := payload["status"].(string); gotStatus != "ok" {
+		t.Fatalf("expected final status ok, got %#v", payload["status"])
+	}
+	if waitCalls.Load() != 2 {
+		t.Fatalf("expected 2 agent.wait calls, got %d", waitCalls.Load())
+	}
+}
+
+func TestBuildAgentResultFromHistory_SkipsBaselineAndEmptyAssistantEntries(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"items": []interface{}{
+				map[string]interface{}{
+					"role":       "assistant",
+					"content":    []interface{}{map[string]interface{}{"type": "text", "text": "old reply"}},
+					"__openclaw": map[string]interface{}{"seq": 2},
+				},
+				map[string]interface{}{
+					"role":       "assistant",
+					"content":    []interface{}{map[string]interface{}{"type": "tool_call", "name": "read"}},
+					"__openclaw": map[string]interface{}{"seq": 4},
+				},
+				map[string]interface{}{
+					"role":       "assistant",
+					"content":    []interface{}{map[string]interface{}{"type": "text", "text": "fresh reply"}},
+					"usage":      map[string]interface{}{"output_tokens": 11},
+					"__openclaw": map[string]interface{}{"seq": 5},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	gw := New(server.URL, "token", server.URL+"/ws")
+	result, err := gw.buildAgentResultFromHistory(context.Background(), "session-1", 2)
+	if err != nil {
+		t.Fatalf("expected history extraction to succeed, got %v", err)
+	}
+
+	expect := map[string]interface{}{
+		"payloads": []interface{}{map[string]interface{}{"text": "fresh reply"}},
+		"meta":     map[string]interface{}{"usage": map[string]interface{}{"output_tokens": 11.0}},
+	}
+	if !reflect.DeepEqual(result, expect) {
+		t.Fatalf("unexpected history-derived result: %#v", result)
+	}
+}
+
+func TestBuildAgentResultFromHistory_ErrorsWhenAssistantTextIsMissing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"items": []interface{}{
+				map[string]interface{}{
+					"role":       "assistant",
+					"content":    []interface{}{map[string]interface{}{"type": "text", "text": "old reply"}},
+					"__openclaw": map[string]interface{}{"seq": 2},
+				},
+				map[string]interface{}{
+					"role":       "assistant",
+					"content":    []interface{}{map[string]interface{}{"type": "tool_call", "name": "read"}},
+					"__openclaw": map[string]interface{}{"seq": 4},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	gw := New(server.URL, "token", server.URL+"/ws")
+	_, err := gw.buildAgentResultFromHistory(context.Background(), "session-1", 2)
+	if err == nil {
+		t.Fatal("expected history extraction to fail when assistant text is missing")
+	}
+	if !strings.Contains(err.Error(), "no assistant text entry found after seq=2") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

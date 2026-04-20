@@ -19,6 +19,7 @@ const (
 	operatorReadScope  = "operator.read"
 	operatorWriteScope = "operator.write"
 	gatewayDialTimeout = 10 * time.Second
+	agentWaitTimeoutMs = 60_000
 )
 
 // GatewayClient is a client for calling OpenClaw Gateway.
@@ -125,7 +126,7 @@ func (c *GatewayClient) waitForAgentCompletion(gw *ws.Conn, runID string) (map[s
 			"method": "agent.wait",
 			"params": map[string]interface{}{
 				"runId":     runID,
-				"timeoutMs": 60000,
+				"timeoutMs": agentWaitTimeoutMs,
 			},
 		}
 
@@ -148,7 +149,7 @@ func (c *GatewayClient) waitForAgentCompletion(gw *ws.Conn, runID string) (map[s
 
 		status, _ := payload["status"].(string)
 		fmt.Printf("[Gateway] waitForAgentCompletion status: %s\n", status)
-		if status == "running" || status == "accepted" {
+		if isPendingAgentWaitStatus(status) {
 			continue
 		}
 		return payload, nil
@@ -537,6 +538,15 @@ func extractPayloadMap(frame map[string]interface{}) (map[string]interface{}, bo
 	return payload, ok
 }
 
+func isPendingAgentWaitStatus(status string) bool {
+	switch status {
+	case "accepted", "running", "timeout":
+		return true
+	default:
+		return false
+	}
+}
+
 // NormalizeNodeArtifacts extracts artifacts from node.invoke result.
 func (c *GatewayClient) NormalizeNodeArtifacts(result interface{}) (interface{}, []protocol.NormalizedArtifact) {
 	if result == nil {
@@ -633,6 +643,9 @@ func (c *GatewayClient) buildAgentResultFromHistory(ctx context.Context, session
 
 	var latestAssistant map[string]interface{}
 	latestSeq := 0
+	latestAssistantSeq := 0
+	latestEmptyAssistantSeq := 0
+	latestText := ""
 	for _, item := range items {
 		record, ok := item.(map[string]interface{})
 		if !ok {
@@ -643,21 +656,41 @@ func (c *GatewayClient) buildAgentResultFromHistory(ctx context.Context, session
 			continue
 		}
 		seq := extractHistorySeq(record)
-		if seq < baselineSeq {
+		if seq <= baselineSeq {
+			continue
+		}
+		if seq > latestAssistantSeq {
+			latestAssistantSeq = seq
+		}
+		text := extractAssistantText(record)
+		if strings.TrimSpace(text) == "" {
+			if seq > latestEmptyAssistantSeq {
+				latestEmptyAssistantSeq = seq
+			}
 			continue
 		}
 		if latestAssistant == nil || seq >= latestSeq {
 			latestAssistant = record
 			latestSeq = seq
+			latestText = text
 		}
 	}
 	if latestAssistant == nil {
+		if latestEmptyAssistantSeq > 0 {
+			return nil, fmt.Errorf(
+				"no assistant text entry found after seq=%d (latest assistant seq=%d was non-text)",
+				baselineSeq,
+				latestEmptyAssistantSeq,
+			)
+		}
+		if latestAssistantSeq > 0 {
+			return nil, fmt.Errorf("no assistant text entry found after seq=%d", baselineSeq)
+		}
 		return nil, fmt.Errorf("no assistant entry found after seq=%d", baselineSeq)
 	}
 
-	text := extractAssistantText(latestAssistant)
 	payload := map[string]interface{}{
-		"payloads": []interface{}{map[string]interface{}{"text": text}},
+		"payloads": []interface{}{map[string]interface{}{"text": latestText}},
 	}
 	if usage, ok := latestAssistant["usage"]; ok {
 		payload["meta"] = map[string]interface{}{"usage": usage}
