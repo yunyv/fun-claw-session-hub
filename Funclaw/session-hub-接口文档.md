@@ -79,6 +79,64 @@ queued -> running -> completed / failed
 
 代码里还预留了 `canceled`，但当前服务端没有主动发 `task.cancel` 的实现。
 
+补充两个容易误解的点：
+
+- `outputs`：协议上支持中间输出；但当前现网 Go worker 对 `responses.create` 默认**不使用** `task.output`，所以这类请求通常会是空数组
+- `result`：只有 request 进入终态后才会出现；结构会随 `action` 变化
+
+当前 `responses.create` 在终态下，`result` 已经稳定包含下面这些字段：
+
+```json
+{
+  "payloads": [
+    {
+      "text": "最终回复文本"
+    }
+  ],
+  "meta": {
+    "usage": {
+      "input": 1182,
+      "output": 915,
+      "cacheRead": 42808,
+      "cacheWrite": 0,
+      "totalTokens": 44905
+    }
+  },
+  "tool_calls": [
+    {
+      "seq": 4,
+      "id": "call_abc",
+      "name": "read",
+      "arguments": {
+        "path": "~/.openclaw/workspace/skills/byted-web-search/SKILL.md"
+      }
+    }
+  ],
+  "tool_results_summary": [
+    {
+      "seq": 5,
+      "tool_call_id": "call_abc",
+      "name": "read",
+      "summary": "工具结果摘要文本",
+      "is_error": false
+    }
+  ]
+}
+```
+
+字段说明：
+
+- `payloads`：当前最终回复文本列表；FunClaw 至少要读取这里的 `text`
+- `meta.usage`：OpenClaw 回传的 usage 信息，字段可能随上游 provider 略有变化
+- `tool_calls`：这次 run 在 session history 里记录到的工具调用摘要
+- `tool_results_summary`：和 `tool_calls` 对应的工具结果摘要
+
+注意：
+
+- 如果这次 run 根本没走工具，`tool_calls` 和 `tool_results_summary` 会是空数组
+- 空数组表示“本次没有工具调用”，**不是** Hub 丢字段
+- 当前这些工具过程字段是跟随最终 `task.completed -> request.result` 一起返回，不是边跑边推
+
 ### 3.3 Artifact
 
 表示 Worker 产出的附件。
@@ -340,8 +398,64 @@ WebSocket 连接建立后，客户端在 `connect` 请求里传：
   "ok": true,
   "request": {
     "request_id": "req_123",
-    "status": "running",
+    "session_id": "conversation-123",
+    "worker_id": "openclaw-main-1",
+    "adapter_id": "funclaw-sidecar-a",
+    "openclaw_session_key": "funclaw:conversation-123",
+    "action": "responses.create",
+    "input": {
+      "stream": false,
+      "input": "请在抖音上帮我获取关于电影战狼相关的播放量最高的top5的短视频的播放地址"
+    },
+    "status": "completed",
+    "created_at": "2026-04-20T08:16:03.731Z",
+    "updated_at": "2026-04-20T08:16:58.585Z",
+    "accepted_at": "2026-04-20T08:16:03.741Z",
+    "finished_at": "2026-04-20T08:16:58.585Z",
     "outputs": [],
+    "result": {
+      "payloads": [
+        {
+          "text": "为你找到抖音上战狼相关播放量最高的Top5短视频链接：..."
+        }
+      ],
+      "meta": {
+        "usage": {
+          "input": 6645,
+          "output": 814,
+          "cacheRead": 53048,
+          "cacheWrite": 0,
+          "totalTokens": 60507
+        }
+      },
+      "tool_calls": [
+        {
+          "seq": 4,
+          "id": "call_56nizzlzhkqhb38e4f43wse1",
+          "name": "read",
+          "arguments": {
+            "path": "~/.openclaw/workspace/skills/byted-web-search/SKILL.md"
+          }
+        },
+        {
+          "seq": 6,
+          "id": "call_wa9iwyb3k3pkh0r5odqhk6sz",
+          "name": "exec",
+          "arguments": {
+            "command": "cd ~/.openclaw/workspace/skills/byted-web-search && python3 scripts/web_search.py \"抖音 战狼电影 播放量最高 top5 短视频链接\" --count 10 --query-rewrite"
+          }
+        }
+      ],
+      "tool_results_summary": [
+        {
+          "seq": 5,
+          "tool_call_id": "call_56nizzlzhkqhb38e4f43wse1",
+          "name": "read",
+          "summary": "工具结果摘要文本",
+          "is_error": false
+        }
+      ]
+    },
     "artifacts": []
   }
 }
@@ -376,6 +490,55 @@ WebSocket 连接建立后，客户端在 `connect` 请求里传：
 - `completed`
 - `failed`
 - `canceled`
+
+一个 `responses.create` 已完成的返回示例：
+
+```json
+{
+  "ok": true,
+  "request": {
+    "request_id": "req_123",
+    "status": "completed",
+    "outputs": [],
+    "result": {
+      "payloads": [
+        {
+          "text": "该文件的第一行是：`---`"
+        }
+      ],
+      "meta": {
+        "usage": {
+          "input": 3019,
+          "output": 1878,
+          "cacheRead": 42808,
+          "cacheWrite": 0,
+          "totalTokens": 47705
+        }
+      },
+      "tool_calls": [
+        {
+          "seq": 2,
+          "id": "call_dzbr9t3w3nzh8jw5ebt0x0om",
+          "name": "read",
+          "arguments": {
+            "path": "~/.openclaw/workspace/skills/browser-use/SKILL.md"
+          }
+        }
+      ],
+      "tool_results_summary": [
+        {
+          "seq": 3,
+          "tool_call_id": "call_dzbr9t3w3nzh8jw5ebt0x0om",
+          "name": "read",
+          "summary": "--- name: browser description: \"Browser automation...\"",
+          "is_error": false
+        }
+      ]
+    },
+    "artifacts": []
+  }
+}
+```
 
 #### 2）超时还没结束：`202`
 
@@ -656,6 +819,12 @@ Hub 给 Worker 派任务。
 
 追加一条中间输出到 `request.outputs`。
 
+补充：
+
+- 这是协议能力，Hub 已经支持
+- 但当前现网 Go worker 对 `responses.create` 默认不发 `task.output`
+- 所以想拿工具过程时，当前应该优先读取最终 `request.result.tool_calls` 和 `request.result.tool_results_summary`
+
 #### `artifact.register`
 
 上传一个 artifact 给 Hub，Hub 会返回 `ArtifactDescriptor`。
@@ -703,6 +872,11 @@ Hub 给 Worker 派任务。
 7. Adapter 轮询 GET /api/v1/requests/{requestId}
    或者阻塞调 POST /api/v1/requests/{requestId}/await
 ```
+
+当前现网对 `responses.create` 再补一句：
+
+- 最终文本、usage、工具调用摘要、工具结果摘要，都是跟着 `task.completed -> request.result` 一起回来
+- 不要假设工具过程一定会出现在 `request.outputs`
 
 ---
 

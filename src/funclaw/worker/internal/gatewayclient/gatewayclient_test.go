@@ -195,6 +195,13 @@ func TestTransformToAgentParams_TextImageAndFile(t *testing.T) {
 	if got, _ := params["message"].(string); got != "图里是什么颜色？\n\n[文件 hello.txt]\nhello" {
 		t.Fatalf("unexpected message: %q", got)
 	}
+	extraSystemPrompt, _ := params["extraSystemPrompt"].(string)
+	if !strings.Contains(extraSystemPrompt, "A local filesystem path alone does not count as completed delivery.") {
+		t.Fatalf("expected FunClaw OSS delivery prompt, got %q", extraSystemPrompt)
+	}
+	if !strings.Contains(extraSystemPrompt, "This applies to every file type and to both intermediate files and final files.") {
+		t.Fatalf("expected prompt to require OSS upload for all file types and file states, got %q", extraSystemPrompt)
+	}
 	attachments, ok := params["attachments"].([]interface{})
 	if !ok || len(attachments) != 1 {
 		t.Fatalf("expected one image attachment, got %#v", params["attachments"])
@@ -215,6 +222,27 @@ func TestTransformToAgentParams_TextImageAndFile(t *testing.T) {
 	}
 	if content, _ := attachment["content"].(string); content == "" {
 		t.Fatal("expected image attachment content to be preserved")
+	}
+}
+
+func TestTransformToAgentParams_AppendsExistingExtraSystemPrompt(t *testing.T) {
+	params := transformToAgentParams(
+		map[string]interface{}{
+			"extraSystemPrompt": "Caller-specific rule.",
+			"input":             "生成一个文件",
+		},
+		"agent:main:test",
+	)
+
+	extraSystemPrompt, _ := params["extraSystemPrompt"].(string)
+	if !strings.Contains(extraSystemPrompt, "Caller-specific rule.") {
+		t.Fatalf("expected caller extraSystemPrompt to be preserved, got %q", extraSystemPrompt)
+	}
+	if !strings.Contains(extraSystemPrompt, "upload every such file to OSS before the final reply") {
+		t.Fatalf("expected FunClaw OSS delivery rule to be appended, got %q", extraSystemPrompt)
+	}
+	if !strings.Contains(extraSystemPrompt, "both intermediate files and final files") {
+		t.Fatalf("expected appended rule to cover intermediate and final files, got %q", extraSystemPrompt)
 	}
 }
 
@@ -348,15 +376,32 @@ func TestBuildAgentResultFromHistory_SkipsBaselineAndEmptyAssistantEntries(t *te
 					"__openclaw": map[string]interface{}{"seq": 2},
 				},
 				map[string]interface{}{
-					"role":       "assistant",
-					"content":    []interface{}{map[string]interface{}{"type": "tool_call", "name": "read"}},
+					"role": "assistant",
+					"content": []interface{}{
+						map[string]interface{}{
+							"type":      "toolCall",
+							"id":        "call-1",
+							"name":      "read",
+							"arguments": map[string]interface{}{"path": "/tmp/demo.txt", "limit": 1},
+						},
+					},
 					"__openclaw": map[string]interface{}{"seq": 4},
+				},
+				map[string]interface{}{
+					"role":       "toolResult",
+					"toolCallId": "call-1",
+					"toolName":   "read",
+					"content": []interface{}{
+						map[string]interface{}{"type": "text", "text": "---\n\n[233 more lines in file.]"},
+					},
+					"isError":    false,
+					"__openclaw": map[string]interface{}{"seq": 5},
 				},
 				map[string]interface{}{
 					"role":       "assistant",
 					"content":    []interface{}{map[string]interface{}{"type": "text", "text": "fresh reply"}},
 					"usage":      map[string]interface{}{"output_tokens": 11},
-					"__openclaw": map[string]interface{}{"seq": 5},
+					"__openclaw": map[string]interface{}{"seq": 6},
 				},
 			},
 		})
@@ -372,6 +417,23 @@ func TestBuildAgentResultFromHistory_SkipsBaselineAndEmptyAssistantEntries(t *te
 	expect := map[string]interface{}{
 		"payloads": []interface{}{map[string]interface{}{"text": "fresh reply"}},
 		"meta":     map[string]interface{}{"usage": map[string]interface{}{"output_tokens": 11.0}},
+		"tool_calls": []interface{}{
+			map[string]interface{}{
+				"seq":       4,
+				"id":        "call-1",
+				"name":      "read",
+				"arguments": map[string]interface{}{"path": "/tmp/demo.txt", "limit": 1.0},
+			},
+		},
+		"tool_results_summary": []interface{}{
+			map[string]interface{}{
+				"seq":          5,
+				"tool_call_id": "call-1",
+				"name":         "read",
+				"summary":      "--- [233 more lines in file.]",
+				"is_error":     false,
+			},
+		},
 	}
 	if !reflect.DeepEqual(result, expect) {
 		t.Fatalf("unexpected history-derived result: %#v", result)

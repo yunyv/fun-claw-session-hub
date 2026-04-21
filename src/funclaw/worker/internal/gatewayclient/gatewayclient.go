@@ -16,11 +16,19 @@ import (
 )
 
 const (
-	operatorReadScope  = "operator.read"
-	operatorWriteScope = "operator.write"
-	gatewayDialTimeout = 10 * time.Second
-	agentWaitTimeoutMs = 60_000
+	operatorReadScope   = "operator.read"
+	operatorWriteScope  = "operator.write"
+	gatewayDialTimeout  = 10 * time.Second
+	agentWaitTimeoutMs  = 60_000
+	toolSummaryMaxChars = 400
 )
+
+const funclawOssDeliveryPrompt = `FunClaw file handling rule:
+If this run creates, modifies, downloads, transforms, stages, or exports any file for the user and the workspace has the oss-publish-result skill, upload every such file to OSS before the final reply.
+This applies to every file type and to both intermediate files and final files.
+A local filesystem path alone does not count as completed delivery.
+In the final reply, return the OSS URL or URLs for all uploaded files.
+If upload fails, clearly say which file remains local and that the OSS upload failed. Do not pretend delivery succeeded.`
 
 // GatewayClient is a client for calling OpenClaw Gateway.
 //
@@ -329,7 +337,31 @@ func transformToAgentParams(input interface{}, sessionKey string) map[string]int
 	}
 	result["message"] = message
 	result["attachments"] = attachments
+	result["extraSystemPrompt"] = mergeExtraSystemPrompt(extractExtraSystemPrompt(input))
 	return result
+}
+
+func extractExtraSystemPrompt(input interface{}) string {
+	inputMap, ok := input.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	raw, _ := inputMap["extraSystemPrompt"].(string)
+	return strings.TrimSpace(raw)
+}
+
+func mergeExtraSystemPrompt(existing string) string {
+	// Keep any caller-provided run-specific guidance, then append the FunClaw-only
+	// delivery rule so OSS handoff behavior stays scoped to this integration path.
+	trimmedExisting := strings.TrimSpace(existing)
+	trimmedRule := strings.TrimSpace(funclawOssDeliveryPrompt)
+	if trimmedExisting == "" {
+		return trimmedRule
+	}
+	if strings.Contains(trimmedExisting, trimmedRule) {
+		return trimmedExisting
+	}
+	return trimmedExisting + "\n\n" + trimmedRule
 }
 
 func extractAgentMessageAndAttachments(input interface{}) (string, []interface{}) {
@@ -646,17 +678,30 @@ func (c *GatewayClient) buildAgentResultFromHistory(ctx context.Context, session
 	latestAssistantSeq := 0
 	latestEmptyAssistantSeq := 0
 	latestText := ""
+	toolCalls := make([]interface{}, 0)
+	seenToolCalls := make(map[string]struct{})
+	toolResultsSummary := make([]interface{}, 0)
 	for _, item := range items {
 		record, ok := item.(map[string]interface{})
 		if !ok {
 			continue
 		}
 		role, _ := record["role"].(string)
-		if role != "assistant" {
-			continue
-		}
 		seq := extractHistorySeq(record)
 		if seq <= baselineSeq {
+			continue
+		}
+		roleKey := normalizeHistoryRole(role)
+		switch roleKey {
+		case "assistant":
+			appendToolCallsFromRecord(record, seq, seenToolCalls, &toolCalls)
+		case "tool", "toolresult":
+			if summary, ok := buildToolResultSummary(record, seq); ok {
+				toolResultsSummary = append(toolResultsSummary, summary)
+			}
+		default:
+		}
+		if roleKey != "assistant" {
 			continue
 		}
 		if seq > latestAssistantSeq {
@@ -690,7 +735,9 @@ func (c *GatewayClient) buildAgentResultFromHistory(ctx context.Context, session
 	}
 
 	payload := map[string]interface{}{
-		"payloads": []interface{}{map[string]interface{}{"text": latestText}},
+		"payloads":             []interface{}{map[string]interface{}{"text": latestText}},
+		"tool_calls":           toolCalls,
+		"tool_results_summary": toolResultsSummary,
 	}
 	if usage, ok := latestAssistant["usage"]; ok {
 		payload["meta"] = map[string]interface{}{"usage": usage}
@@ -735,6 +782,161 @@ func extractAssistantText(record map[string]interface{}) string {
 		}
 	}
 	return strings.Join(texts, "\n\n")
+}
+
+func normalizeHistoryRole(role string) string {
+	return strings.ToLower(strings.TrimSpace(role))
+}
+
+func normalizeContentBlockType(blockType string) string {
+	return strings.ToLower(strings.TrimSpace(blockType))
+}
+
+func appendToolCallsFromRecord(
+	record map[string]interface{},
+	seq int,
+	seen map[string]struct{},
+	toolCalls *[]interface{},
+) {
+	content, ok := record["content"].([]interface{})
+	if !ok {
+		return
+	}
+
+	for _, block := range content {
+		part, ok := block.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		switch normalizeContentBlockType(firstStringValue(part["type"])) {
+		case "toolcall", "tool_call", "tooluse", "tool_use", "functioncall", "function_call":
+		default:
+			continue
+		}
+
+		id := firstStringValue(part["id"], part["toolCallId"], part["tool_call_id"], part["callId"], part["call_id"])
+		name := firstStringValue(part["name"], part["toolName"], part["tool_name"])
+		arguments := firstNonNilValue(part["arguments"], part["args"], part["input"])
+		if strings.TrimSpace(id) == "" && strings.TrimSpace(name) == "" && arguments == nil {
+			continue
+		}
+
+		key := id
+		if strings.TrimSpace(key) == "" {
+			key = fmt.Sprintf("%d:%s", seq, name)
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		entry := map[string]interface{}{
+			"seq": seq,
+		}
+		if strings.TrimSpace(id) != "" {
+			entry["id"] = id
+		}
+		if strings.TrimSpace(name) != "" {
+			entry["name"] = name
+		}
+		if arguments != nil {
+			entry["arguments"] = arguments
+		}
+		*toolCalls = append(*toolCalls, entry)
+	}
+}
+
+func buildToolResultSummary(record map[string]interface{}, seq int) (map[string]interface{}, bool) {
+	summary := summarizeToolResultText(record)
+	if summary == "" {
+		return nil, false
+	}
+
+	entry := map[string]interface{}{
+		"seq":     seq,
+		"summary": summary,
+	}
+	if toolCallID := firstStringValue(record["toolCallId"], record["tool_call_id"], record["id"]); strings.TrimSpace(toolCallID) != "" {
+		entry["tool_call_id"] = toolCallID
+	}
+	if name := firstStringValue(record["toolName"], record["tool_name"], record["name"]); strings.TrimSpace(name) != "" {
+		entry["name"] = name
+	}
+	if isError, ok := record["isError"].(bool); ok {
+		entry["is_error"] = isError
+	}
+	return entry, true
+}
+
+func summarizeToolResultText(record map[string]interface{}) string {
+	parts := make([]string, 0)
+	appendSummaryTextFromValue(record["content"], &parts)
+	if len(parts) == 0 {
+		appendSummaryTextFromValue(record["toolOutput"], &parts)
+		appendSummaryTextFromValue(record["output"], &parts)
+		appendSummaryTextFromValue(record["result"], &parts)
+	}
+	if len(parts) == 0 {
+		if marshaled, err := json.Marshal(record["content"]); err == nil && strings.TrimSpace(string(marshaled)) != "" && string(marshaled) != "null" {
+			parts = append(parts, string(marshaled))
+		}
+	}
+	return truncateSummaryText(strings.Join(parts, "\n\n"))
+}
+
+func appendSummaryTextFromValue(value interface{}, parts *[]string) {
+	switch current := value.(type) {
+	case string:
+		trimmed := strings.TrimSpace(current)
+		if trimmed != "" {
+			*parts = append(*parts, trimmed)
+		}
+	case []interface{}:
+		for _, item := range current {
+			appendSummaryTextFromValue(item, parts)
+		}
+	case map[string]interface{}:
+		if text, ok := current["text"].(string); ok && strings.TrimSpace(text) != "" {
+			*parts = append(*parts, strings.TrimSpace(text))
+		}
+		appendSummaryTextFromValue(current["content"], parts)
+		appendSummaryTextFromValue(current["output"], parts)
+		appendSummaryTextFromValue(current["result"], parts)
+		appendSummaryTextFromValue(current["toolOutput"], parts)
+	}
+}
+
+func truncateSummaryText(text string) string {
+	normalized := strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+	if normalized == "" {
+		return ""
+	}
+	runes := []rune(normalized)
+	if len(runes) <= toolSummaryMaxChars {
+		return normalized
+	}
+	if toolSummaryMaxChars <= 1 {
+		return string(runes[:toolSummaryMaxChars])
+	}
+	return string(runes[:toolSummaryMaxChars-1]) + "…"
+}
+
+func firstStringValue(values ...interface{}) string {
+	for _, value := range values {
+		if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func firstNonNilValue(values ...interface{}) interface{} {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
 }
 
 // Helper functions

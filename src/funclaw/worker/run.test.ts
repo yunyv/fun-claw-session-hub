@@ -14,10 +14,26 @@ const SMALL_PNG_BASE64 =
 
 type Cleanup = () => Promise<void> | void;
 
+type GatewayStubSession = {
+  replyText: string;
+  completed: boolean;
+  toolCall: {
+    id: string;
+    name: string;
+    arguments: Record<string, unknown>;
+  };
+  toolResultText: string;
+};
+
 type GatewayStubState = {
-  agentCalls: Array<{ sessionKey: string; message: string; attachments: unknown[] }>;
+  agentCalls: Array<{
+    sessionKey: string;
+    message: string;
+    attachments: unknown[];
+    extraSystemPrompt: string;
+  }>;
   nodeCalls: Array<Record<string, unknown>>;
-  sessions: Map<string, { replyText: string; completed: boolean }>;
+  sessions: Map<string, GatewayStubSession>;
 };
 
 async function getFreePort() {
@@ -74,6 +90,15 @@ async function startGatewayStub() {
       const session = state.sessions.get(sessionKey) ?? {
         replyText: `reply:${sessionKey}`,
         completed: false,
+        toolCall: {
+          id: `call:${sessionKey}`,
+          name: "read",
+          arguments: {
+            path: `/tmp/${sessionKey}.txt`,
+            limit: 1,
+          },
+        },
+        toolResultText: `preview:${sessionKey}`,
       };
       state.sessions.set(sessionKey, session);
       const items = [
@@ -86,9 +111,29 @@ async function startGatewayStub() {
       if (session.completed) {
         items.push({
           role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: session.toolCall.id,
+              name: session.toolCall.name,
+              arguments: session.toolCall.arguments,
+            },
+          ],
+          __openclaw: { seq: 2 },
+        });
+        items.push({
+          role: "toolResult",
+          toolCallId: session.toolCall.id,
+          toolName: session.toolCall.name,
+          content: [{ type: "text", text: session.toolResultText }],
+          isError: false,
+          __openclaw: { seq: 3 },
+        });
+        items.push({
+          role: "assistant",
           content: [{ type: "text", text: session.replyText }],
           usage: { output_tokens: 7 },
-          __openclaw: { seq: 2 },
+          __openclaw: { seq: 4 },
         });
       }
       sendJson(res, 200, { items });
@@ -145,10 +190,20 @@ async function startGatewayStub() {
         const sessionKey = String(frame.params?.sessionKey ?? "");
         const message = String(frame.params?.message ?? "");
         const attachments = Array.isArray(frame.params?.attachments) ? frame.params.attachments : [];
-        state.agentCalls.push({ sessionKey, message, attachments });
+        const extraSystemPrompt = String(frame.params?.extraSystemPrompt ?? "");
+        state.agentCalls.push({ sessionKey, message, attachments, extraSystemPrompt });
         state.sessions.set(sessionKey, {
           replyText: `assistant:${message}`,
           completed: false,
+          toolCall: {
+            id: `call:${sessionKey}`,
+            name: "read",
+            arguments: {
+              path: "/tmp/demo.txt",
+              limit: 1,
+            },
+          },
+          toolResultText: "---\n\n[233 more lines in file.]",
         });
         const runId = `run-${++runCounter}`;
         runIdToSession.set(runId, sessionKey);
@@ -356,12 +411,38 @@ describe("funclaw go worker", () => {
     expect(responseRequest.body.request.result).toEqual({
       payloads: [{ text: "assistant:你好，帮我总结一下" }],
       meta: { usage: { output_tokens: 7 } },
+      tool_calls: [
+        {
+          seq: 2,
+          id: "call:session-key-1",
+          name: "read",
+          arguments: {
+            path: "/tmp/demo.txt",
+            limit: 1,
+          },
+        },
+      ],
+      tool_results_summary: [
+        {
+          seq: 3,
+          tool_call_id: "call:session-key-1",
+          name: "read",
+          summary: "--- [233 more lines in file.]",
+          is_error: false,
+        },
+      ],
     });
     expect(gateway.state.agentCalls).toHaveLength(1);
     expect(gateway.state.agentCalls[0]).toMatchObject({
       sessionKey: "session-key-1",
       message: "你好，帮我总结一下",
     });
+    expect(gateway.state.agentCalls[0]?.extraSystemPrompt).toContain(
+      "A local filesystem path alone does not count as completed delivery.",
+    );
+    expect(gateway.state.agentCalls[0]?.extraSystemPrompt).toContain(
+      "upload every such file to OSS before the final reply",
+    );
 
     const historyRes = await authedFetch(hubPort, "/api/v1/sessions/session-1/history");
     expect(historyRes.status).toBe(200);
