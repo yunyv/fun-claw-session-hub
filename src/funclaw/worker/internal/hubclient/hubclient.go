@@ -27,12 +27,12 @@ type HubFrame struct {
 
 // HubClientOptions contains options for creating a Hub client
 type HubClientOptions struct {
-	URL           string
-	Token         string
-	WorkerID      string
-	Hostname      string
-	Version       string
-	Capabilities  []string
+	URL            string
+	Token          string
+	WorkerID       string
+	Hostname       string
+	Version        string
+	Capabilities   []string
 	OnTaskAssigned func(*protocol.TaskAssignedPayload) error
 }
 
@@ -49,6 +49,8 @@ type HubClient struct {
 	connected       chan struct{}
 	writeMu         sync.Mutex
 	reconnecting    bool
+	serialMu        sync.Mutex
+	serialTails     map[string]chan struct{}
 }
 
 // HubResponse represents a response from Hub
@@ -61,9 +63,10 @@ type HubResponse struct {
 // New creates a new Hub client
 func New(opts HubClientOptions) *HubClient {
 	return &HubClient{
-		opts:      opts,
-		pending:   make(map[string]chan *protocol.HubResponseFrame),
-		connected: make(chan struct{}),
+		opts:        opts,
+		pending:     make(map[string]chan *protocol.HubResponseFrame),
+		connected:   make(chan struct{}),
+		serialTails: make(map[string]chan struct{}),
 	}
 }
 
@@ -260,13 +263,51 @@ func (c *HubClient) handleEvent(frame HubFrame) {
 			return
 		}
 		if c.opts.OnTaskAssigned != nil {
-			go func() {
-				if err := c.opts.OnTaskAssigned(&payload); err != nil {
-					fmt.Printf("task handler error: %v\n", err)
-				}
-			}()
+			c.enqueueTaskAssigned(payload)
 		}
 	}
+}
+
+func (c *HubClient) enqueueTaskAssigned(payload protocol.TaskAssignedPayload) {
+	serialKey := taskSerialKey(&payload)
+	done := make(chan struct{})
+
+	c.serialMu.Lock()
+	prev := c.serialTails[serialKey]
+	c.serialTails[serialKey] = done
+	c.serialMu.Unlock()
+
+	go func(task protocol.TaskAssignedPayload, key string, waitFor chan struct{}, markDone chan struct{}) {
+		if waitFor != nil {
+			<-waitFor
+		}
+
+		defer close(markDone)
+		defer func() {
+			c.serialMu.Lock()
+			if tail, ok := c.serialTails[key]; ok && tail == markDone {
+				delete(c.serialTails, key)
+			}
+			c.serialMu.Unlock()
+		}()
+
+		if err := c.opts.OnTaskAssigned(&task); err != nil {
+			fmt.Printf("task handler error: %v\n", err)
+		}
+	}(payload, serialKey, prev, done)
+}
+
+func taskSerialKey(task *protocol.TaskAssignedPayload) string {
+	if task == nil {
+		return ""
+	}
+	if task.OpenclawSessionKey != "" {
+		return task.OpenclawSessionKey
+	}
+	if task.SessionID != "" {
+		return task.SessionID
+	}
+	return task.RequestID
 }
 
 func (c *HubClient) handleResponse(frame HubFrame) {

@@ -106,12 +106,17 @@ func handleTask(hub *hubclient.HubClient, gateway *gatewayclient.GatewayClient, 
 		fmt.Printf("[Worker] Executing responses.create (mapped to agent) for request_id=%s\n", task.RequestID)
 		inputJSON, _ := json.MarshalIndent(task.Input, "", "  ")
 		fmt.Printf("[Worker] DEBUG: input=%s\n", string(inputJSON))
-		res, err := gateway.CallAgent(ctx, task.Input, task.OpenclawSessionKey)
+		res, normalizedArtifacts, err := gateway.CallAgent(ctx, task.Input, task.OpenclawSessionKey)
 		if err != nil {
 			fmt.Printf("[Worker] ERROR: responses.create failed: %v\n", err)
 			return sendFailed(hub, task.RequestID, err)
 		}
 		result = res
+		artifacts, err = registerNormalizedArtifacts(hub, task.RequestID, normalizedArtifacts)
+		if err != nil {
+			fmt.Printf("[Worker] ERROR: responses.create artifact registration failed: %v\n", err)
+			return sendFailed(hub, task.RequestID, err)
+		}
 		fmt.Printf("[Worker] responses.create completed for request_id=%s\n", task.RequestID)
 
 	case protocol.TaskActionAgent:
@@ -119,12 +124,17 @@ func handleTask(hub *hubclient.HubClient, gateway *gatewayclient.GatewayClient, 
 		// Debug: print input structure
 		inputJSON, _ := json.MarshalIndent(task.Input, "", "  ")
 		fmt.Printf("[Worker] DEBUG: input=%s\n", string(inputJSON))
-		res, err := gateway.CallAgent(ctx, task.Input, task.OpenclawSessionKey)
+		res, normalizedArtifacts, err := gateway.CallAgent(ctx, task.Input, task.OpenclawSessionKey)
 		if err != nil {
 			fmt.Printf("[Worker] ERROR: agent failed: %v\n", err)
 			return sendFailed(hub, task.RequestID, err)
 		}
 		result = res
+		artifacts, err = registerNormalizedArtifacts(hub, task.RequestID, normalizedArtifacts)
+		if err != nil {
+			fmt.Printf("[Worker] ERROR: agent artifact registration failed: %v\n", err)
+			return sendFailed(hub, task.RequestID, err)
+		}
 		fmt.Printf("[Worker] agent completed for request_id=%s\n", task.RequestID)
 
 	case protocol.TaskActionSessionHistoryGet:
@@ -154,24 +164,10 @@ func handleTask(hub *hubclient.HubClient, gateway *gatewayclient.GatewayClient, 
 		normalizedResult, normalizedArtifacts := gateway.NormalizeNodeArtifacts(res)
 		result = normalizedResult
 
-		// Register artifacts
-		for _, art := range normalizedArtifacts {
-			fmt.Printf("[Worker] Registering artifact: filename=%s, kind=%s\n", art.Filename, art.Kind)
-			desc, err := hub.RegisterArtifact(protocol.ArtifactRegisterParams{
-				RequestID: task.RequestID,
-				Artifact: protocol.ArtifactInput{
-					Kind:          protocol.ArtifactKind(art.Kind),
-					Filename:      art.Filename,
-					MimeType:      art.MimeType,
-					ContentBase64: art.ContentBase64,
-					Meta:          art.Meta,
-				},
-			})
-			if err != nil {
-				fmt.Printf("[Worker] ERROR: artifact.register failed: %v\n", err)
-				return sendFailed(hub, task.RequestID, err)
-			}
-			artifacts = append(artifacts, *desc)
+		artifacts, err = registerNormalizedArtifacts(hub, task.RequestID, normalizedArtifacts)
+		if err != nil {
+			fmt.Printf("[Worker] ERROR: node.invoke artifact registration failed: %v\n", err)
+			return sendFailed(hub, task.RequestID, err)
 		}
 		fmt.Printf("[Worker] node.invoke completed for request_id=%s with %d artifacts\n", task.RequestID, len(artifacts))
 
@@ -189,6 +185,32 @@ func handleTask(hub *hubclient.HubClient, gateway *gatewayclient.GatewayClient, 
 
 	fmt.Printf("[Worker] Task completed successfully: request_id=%s\n", task.RequestID)
 	return nil
+}
+
+func registerNormalizedArtifacts(
+	hub *hubclient.HubClient,
+	requestID string,
+	artifacts []protocol.NormalizedArtifact,
+) ([]protocol.ArtifactDescriptor, error) {
+	registered := make([]protocol.ArtifactDescriptor, 0, len(artifacts))
+	for _, art := range artifacts {
+		fmt.Printf("[Worker] Registering artifact: filename=%s, kind=%s\n", art.Filename, art.Kind)
+		desc, err := hub.RegisterArtifact(protocol.ArtifactRegisterParams{
+			RequestID: requestID,
+			Artifact: protocol.ArtifactInput{
+				Kind:          protocol.ArtifactKind(art.Kind),
+				Filename:      art.Filename,
+				MimeType:      art.MimeType,
+				ContentBase64: art.ContentBase64,
+				Meta:          art.Meta,
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		registered = append(registered, *desc)
+	}
+	return registered, nil
 }
 
 func sendFailed(hub *hubclient.HubClient, requestID string, err error) error {

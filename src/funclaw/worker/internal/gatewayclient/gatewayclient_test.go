@@ -409,9 +409,12 @@ func TestBuildAgentResultFromHistory_SkipsBaselineAndEmptyAssistantEntries(t *te
 	defer server.Close()
 
 	gw := New(server.URL, "token", server.URL+"/ws")
-	result, err := gw.buildAgentResultFromHistory(context.Background(), "session-1", 2)
+	result, artifacts, err := gw.buildAgentResultFromHistory(context.Background(), "session-1", 2)
 	if err != nil {
 		t.Fatalf("expected history extraction to succeed, got %v", err)
+	}
+	if len(artifacts) != 0 {
+		t.Fatalf("expected no artifacts, got %#v", artifacts)
 	}
 
 	expect := map[string]interface{}{
@@ -461,7 +464,7 @@ func TestBuildAgentResultFromHistory_ErrorsWhenAssistantTextIsMissing(t *testing
 	defer server.Close()
 
 	gw := New(server.URL, "token", server.URL+"/ws")
-	_, err := gw.buildAgentResultFromHistory(context.Background(), "session-1", 2)
+	_, _, err := gw.buildAgentResultFromHistory(context.Background(), "session-1", 2)
 	if err == nil {
 		t.Fatal("expected history extraction to fail when assistant text is missing")
 	}

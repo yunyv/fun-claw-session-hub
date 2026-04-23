@@ -56,7 +56,11 @@ func New(baseURL, token, wsURL string) *GatewayClient {
 }
 
 // CallAgent calls the agent method via WebSocket on Gateway.
-func (c *GatewayClient) CallAgent(ctx context.Context, input interface{}, sessionKey string) (interface{}, error) {
+func (c *GatewayClient) CallAgent(
+	ctx context.Context,
+	input interface{},
+	sessionKey string,
+) (interface{}, []protocol.NormalizedArtifact, error) {
 	fmt.Printf("[Gateway] CallAgent called with sessionKey=%s\n", sessionKey)
 
 	inputJSON, _ := json.MarshalIndent(input, "", "  ")
@@ -71,7 +75,7 @@ func (c *GatewayClient) CallAgent(ctx context.Context, input interface{}, sessio
 
 	gw, err := c.connectOperatorSocket(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer gw.Close()
 
@@ -87,42 +91,42 @@ func (c *GatewayClient) CallAgent(ctx context.Context, input interface{}, sessio
 	fmt.Printf("[Gateway] CallAgent sending: %s\n", string(reqJSON))
 
 	if err := gw.WriteJSON(reqPayload); err != nil {
-		return nil, fmt.Errorf("failed to send agent request: %w", err)
+		return nil, nil, fmt.Errorf("failed to send agent request: %w", err)
 	}
 
 	initialResp, err := c.readMatchingResponse(gw, "agent-1")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	payload, ok := extractPayloadMap(initialResp)
 	if !ok {
-		return nil, fmt.Errorf("missing payload in agent response: %v", initialResp)
+		return nil, nil, fmt.Errorf("missing payload in agent response: %v", initialResp)
 	}
 
 	runID, ok := payload["runId"].(string)
 	if !ok {
-		return nil, fmt.Errorf("missing runId in agent response: %v", payload)
+		return nil, nil, fmt.Errorf("missing runId in agent response: %v", payload)
 	}
 	status, _ := payload["status"].(string)
 	fmt.Printf("[Gateway] CallAgent accepted, runId=%s, status=%s\n", runID, status)
 
 	waitPayload, err := c.waitForAgentCompletion(gw, runID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// agent.wait 只给状态，不给最终文本；真正结果从 session history 里补回。
 	if sessionKey != "" {
-		historyResult, historyErr := c.buildAgentResultFromHistory(ctx, sessionKey, baselineSeq)
+		historyResult, historyArtifacts, historyErr := c.buildAgentResultFromHistory(ctx, sessionKey, baselineSeq)
 		if historyErr == nil {
 			fmt.Printf("[Gateway] CallAgent history-derived result extracted: %v\n", historyResult)
-			return historyResult, nil
+			return historyResult, historyArtifacts, nil
 		}
 		fmt.Printf("[Gateway] CallAgent history-derived result failed, fallback to wait payload: %v\n", historyErr)
 	}
 
 	fmt.Printf("[Gateway] CallAgent wait payload fallback: %v\n", waitPayload)
-	return waitPayload, nil
+	return waitPayload, nil, nil
 }
 
 func (c *GatewayClient) waitForAgentCompletion(gw *ws.Conn, runID string) (map[string]interface{}, error) {
@@ -659,18 +663,22 @@ func (c *GatewayClient) getLatestHistorySeq(ctx context.Context, sessionKey stri
 	return latest, nil
 }
 
-func (c *GatewayClient) buildAgentResultFromHistory(ctx context.Context, sessionKey string, baselineSeq int) (interface{}, error) {
+func (c *GatewayClient) buildAgentResultFromHistory(
+	ctx context.Context,
+	sessionKey string,
+	baselineSeq int,
+) (interface{}, []protocol.NormalizedArtifact, error) {
 	history, err := c.GetSessionHistory(ctx, sessionKey, map[string]interface{}{"limit": 20})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	historyMap, ok := history.(map[string]interface{})
 	if !ok {
-		return nil, fmt.Errorf("unexpected history response type: %T", history)
+		return nil, nil, fmt.Errorf("unexpected history response type: %T", history)
 	}
 	items, ok := historyMap["items"].([]interface{})
 	if !ok || len(items) == 0 {
-		return nil, fmt.Errorf("history result missing items")
+		return nil, nil, fmt.Errorf("history result missing items")
 	}
 
 	var latestAssistant map[string]interface{}
@@ -681,6 +689,7 @@ func (c *GatewayClient) buildAgentResultFromHistory(ctx context.Context, session
 	toolCalls := make([]interface{}, 0)
 	seenToolCalls := make(map[string]struct{})
 	toolResultsSummary := make([]interface{}, 0)
+	artifactCollector := newAgentArtifactCollector(c, ctx)
 	for _, item := range items {
 		record, ok := item.(map[string]interface{})
 		if !ok {
@@ -695,9 +704,15 @@ func (c *GatewayClient) buildAgentResultFromHistory(ctx context.Context, session
 		switch roleKey {
 		case "assistant":
 			appendToolCallsFromRecord(record, seq, seenToolCalls, &toolCalls)
+			if err := artifactCollector.collectFromRecord(record, seq); err != nil {
+				return nil, nil, err
+			}
 		case "tool", "toolresult":
 			if summary, ok := buildToolResultSummary(record, seq); ok {
 				toolResultsSummary = append(toolResultsSummary, summary)
+			}
+			if err := artifactCollector.collectFromRecord(record, seq); err != nil {
+				return nil, nil, err
 			}
 		default:
 		}
@@ -722,16 +737,16 @@ func (c *GatewayClient) buildAgentResultFromHistory(ctx context.Context, session
 	}
 	if latestAssistant == nil {
 		if latestEmptyAssistantSeq > 0 {
-			return nil, fmt.Errorf(
+			return nil, nil, fmt.Errorf(
 				"no assistant text entry found after seq=%d (latest assistant seq=%d was non-text)",
 				baselineSeq,
 				latestEmptyAssistantSeq,
 			)
 		}
 		if latestAssistantSeq > 0 {
-			return nil, fmt.Errorf("no assistant text entry found after seq=%d", baselineSeq)
+			return nil, nil, fmt.Errorf("no assistant text entry found after seq=%d", baselineSeq)
 		}
-		return nil, fmt.Errorf("no assistant entry found after seq=%d", baselineSeq)
+		return nil, nil, fmt.Errorf("no assistant entry found after seq=%d", baselineSeq)
 	}
 
 	payload := map[string]interface{}{
@@ -742,7 +757,7 @@ func (c *GatewayClient) buildAgentResultFromHistory(ctx context.Context, session
 	if usage, ok := latestAssistant["usage"]; ok {
 		payload["meta"] = map[string]interface{}{"usage": usage}
 	}
-	return payload, nil
+	return payload, artifactCollector.artifacts, nil
 }
 
 func extractHistorySeq(item interface{}) int {
