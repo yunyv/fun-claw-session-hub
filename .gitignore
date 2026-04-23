@@ -2,6 +2,5 @@ node_modules/
 .tmp/
 __pycache__/
 *.pyc
-Funclaw/ssh相关的事情.md
-Funclaw/给Codex-OpenClaw-root和OSS排坑简述.md
-Funclaw/Funclaw.code-workspace
+docs/ops/*.local.md
+workspace/

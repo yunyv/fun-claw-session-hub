@@ -2,9 +2,13 @@
 
 这份文档只讲 **现在代码里已经实现的 Session Hub 接口**。
 
-如果你只想先看机器可读版本，直接看：
+如果你只想先看仓库里现成的接口说明，先看这份文档本身。
 
-- `Funclaw/funclaw-hub.openapi.yaml`
+当前仓库还没有机器可读的 OpenAPI 文件。
+
+如果后续补上，建议放在：
+
+- `docs/api/funclaw-hub.openapi.yaml`
 
 如果你要核对“文档是不是和代码一致”，以这几个文件为准：
 
@@ -884,8 +888,8 @@ Hub 给 Worker 派任务。
 
 建议这么看：
 
-- 人看流程和语义：`Funclaw/session-hub-接口文档.md`
-- 机器对接 HTTP：`Funclaw/funclaw-hub.openapi.yaml`
+- 人看流程和语义：`docs/api/session-hub-接口文档.md`
+- 机器对接 HTTP：当前仓库未包含 OpenAPI 文件；后续建议补到 `docs/api/funclaw-hub.openapi.yaml`
 - 核对协议字段：`src/funclaw/contracts/schema.ts`
 - 核对运行时行为：`src/funclaw/hub/server.ts`
 
@@ -893,7 +897,7 @@ Hub 给 Worker 派任务。
 
 1. `src/funclaw/contracts/schema.ts`
 2. `src/funclaw/hub/server.ts`
-3. `Funclaw/funclaw-hub.openapi.yaml`
+3. 如果后续补了 OpenAPI，再改 `docs/api/funclaw-hub.openapi.yaml`
 4. 这份文档
 
 这样不容易文档漂移。

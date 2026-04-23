@@ -1,6 +1,6 @@
 # External Agent Chat `request` 晋升为 `task`：Session Hub 侧摘录
 
-> 来源文档：`Funclaw/request-promotion-task-plan(1).md`
+> 来源文档：`request-promotion-task-plan(1).md`（原始任务单，当前仓库未保存）
 > 摘录目的：只保留 **`fun-claw-session-hub` 仓库** 需要承担的修改项
 > 当前判断时间：2026-04-22
 

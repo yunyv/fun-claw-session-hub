@@ -4,8 +4,8 @@
 > 仓库：`/home/yunyv/test-projects/Fenxing/fun-claw-session-hub`
 > 目标：只完成 `session-hub` 仓库这一侧的改造，不碰 `fun-claw-api` 和 `fun-claw-front`
 > 参考文档：
-> - `Funclaw/request-promotion-task-plan(1).md`
-> - `Funclaw/request-promotion-task-plan-session-hub-摘录.md`
+> - `request-promotion-task-plan(1).md`（原始任务单，当前仓库未保存）
+> - `docs/plans/request-promotion-task-plan-session-hub-摘录.md`
 
 ## 1. 任务目标
 
@@ -52,7 +52,7 @@
 
 按这个顺序读，读完再写代码：
 
-1. `Funclaw/request-promotion-task-plan-session-hub-摘录.md`
+1. `docs/plans/request-promotion-task-plan-session-hub-摘录.md`
 2. `src/funclaw/worker/cmd/go-worker/main.go`
 3. `src/funclaw/worker/internal/gatewayclient/gatewayclient.go`
 4. `src/funclaw/worker/internal/hubclient/hubclient.go`

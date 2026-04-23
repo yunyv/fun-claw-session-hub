@@ -21,9 +21,9 @@ description: 当用户要求替换、上线、回滚、重启或排查生产 Fun
 
 ## 先读这些文件
 
-- `Funclaw/ssh相关的事情.md`
-- `Funclaw/给Codex-OpenClaw-root和OSS排坑简述.md`
-- `Funclaw/session-hub-接口文档.md`
+- `docs/ops/ssh相关的事情.local.md`
+- `docs/ops/给Codex-OpenClaw-root和OSS排坑简述.local.md`
+- `docs/api/session-hub-接口文档.md`
 - `README.md`
 - `src/funclaw/worker/README.md`
 - `src/funclaw/worker/cmd/go-worker/main.go`

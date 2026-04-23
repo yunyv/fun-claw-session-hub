@@ -304,11 +304,11 @@ FunClaw Hub
 
 如果已经看懂整体，再往下钻可以看这些文件：
 
-- 完整设计稿：`Funclaw/实现方案2-session-hub版.md`
-- Hub HTTP 协议：`Funclaw/funclaw-hub.openapi.yaml`
+- 完整设计稿：`docs/design/实现方案2-session-hub版.md`
+- Hub HTTP 文档：`docs/api/session-hub-接口文档.md`
 - Hub 入口实现：`src/funclaw/hub/server.ts`
 - Hub 状态存储：`src/funclaw/hub/store.ts`
 - Worker 主流程：`src/funclaw/worker/run.ts`
-- Worker 连 Hub：`src/funclaw/worker/hub-client.ts`
-- Worker 调 OpenClaw：`src/funclaw/worker/openclaw-client.ts`
+- Worker 连 Hub：`src/funclaw/worker/internal/hubclient/hubclient.go`
+- Worker 调 OpenClaw：`src/funclaw/worker/internal/gatewayclient/gatewayclient.go`
 - CLI 入口：`src/cli/funclaw-cli/register.ts`

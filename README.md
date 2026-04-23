@@ -2,14 +2,21 @@
 
 从 OpenClaw 抽出来的独立 Session Hub / Worker 验证仓库。
 
-Included paths:
-- Funclaw
-- src/funclaw
-- src/cli/funclaw-cli
+## 仓库结构
+
+- `docs/api`：Session Hub 接口文档
+- `docs/design`：方案稿和精简版方案
+- `docs/plans`：执行计划与任务摘录
+- `docs/ops`：本机运维记录，使用 `.local.md` 后缀，默认不提交
+- `src/funclaw`：Hub、契约和 Worker 主代码
+- `src/cli/funclaw-cli`：本仓库 CLI 入口
+- `skills`：OpenClaw 运行时 skill
+- `.agents`：给 Codex 用的仓库内说明
+- `workspace`：本机 IDE 工作区文件，默认不提交
 
 Session Hub docs:
-- `Funclaw/session-hub-接口文档.md`
-- `Funclaw/funclaw-hub.openapi.yaml`
+- `docs/api/session-hub-接口文档.md`
+- 当前仓库还没有 `funclaw-hub.openapi.yaml`；如果后续补上，建议放在 `docs/api/`
 
 ## 当前状态
 

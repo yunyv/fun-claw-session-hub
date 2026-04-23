@@ -72,12 +72,12 @@ sequenceDiagram
 flowchart TD
     SCHEMA["协议模型<br/>src/funclaw/contracts/schema.ts"]
     CONTRACTS["校验器与常量<br/>src/funclaw/contracts/index.ts"]
-    OPENAPI["Hub HTTP 面<br/>Funclaw/funclaw-hub.openapi.yaml"]
+    OPENAPI["Hub HTTP 文档<br/>docs/api/session-hub-接口文档.md"]
     HUBSERVER["Hub 入口层<br/>src/funclaw/hub/server.ts"]
     HUBSTORE["Hub 状态层<br/>src/funclaw/hub/store.ts"]
     WORKERRUN["Worker 编排层<br/>src/funclaw/worker/run.ts"]
-    HUBCLIENT["Worker -> Hub 长连<br/>src/funclaw/worker/hub-client.ts"]
-    OCCLIENT["Worker -> OpenClaw 调用<br/>src/funclaw/worker/openclaw-client.ts"]
+    HUBCLIENT["Worker -> Hub 长连<br/>src/funclaw/worker/internal/hubclient/hubclient.go"]
+    OCCLIENT["Worker -> OpenClaw 调用<br/>src/funclaw/worker/internal/gatewayclient/gatewayclient.go"]
 
     SCHEMA --> CONTRACTS
     SCHEMA --> OPENAPI
@@ -363,10 +363,16 @@ Hub 对外只开一个 HTTP 入口，默认端口：
 31880
 ```
 
-为了方便多人协作，当前 HTTP 接口已经额外整理成 OpenAPI 文件：
+为了方便多人协作，当前仓库把 HTTP 接口说明集中放在这份文档：
 
 ```text
-Funclaw/funclaw-hub.openapi.yaml
+docs/api/session-hub-接口文档.md
+```
+
+如果后续补机器可读版本，建议新增到：
+
+```text
+docs/api/funclaw-hub.openapi.yaml
 ```
 
 默认公开路径如下：
